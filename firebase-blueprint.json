@@ -1,0 +1,113 @@
+{
+  "entities": {
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "A pre-owned car or commercial vehicle listed by PM Cars Ariyalur.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 150 },
+        "brand": { "type": "string", "maxLength": 60 },
+        "model": { "type": "string", "maxLength": 60 },
+        "variant": { "type": "string", "maxLength": 60 },
+        "year": { "type": "integer" },
+        "price": { "type": "number" },
+        "priceDisplay": { "type": "string", "maxLength": 50 },
+        "kilometers": { "type": "integer" },
+        "owners": { "type": "integer" },
+        "fuelType": { "type": "string", "enum": ["Petrol", "Diesel", "CNG", "Electric", "Hybrid"] },
+        "transmission": { "type": "string", "enum": ["Manual", "Automatic"] },
+        "vehicleCategory": { "type": "string", "enum": ["private", "commercial"] },
+        "registrationType": { "type": "string", "enum": ["Own Board", "T-Board"] },
+        "condition": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2500 },
+        "features": { "type": "array", "maxLength": 30 },
+        "images": { "type": "array", "maxLength": 20 },
+        "thumbnail": { "type": "string", "maxLength": 1000 },
+        "insuranceStatus": { "type": "string", "maxLength": 100 },
+        "insuranceExpiry": { "type": "string", "maxLength": 100 },
+        "serviceHistory": { "type": "string", "maxLength": 200 },
+        "location": { "type": "string", "maxLength": 200 },
+        "status": { "type": "string", "enum": ["available", "reserved", "sold"] },
+        "featured": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "brand", "model", "year", "price", "fuelType", "transmission", "vehicleCategory", "registrationType", "status"]
+    },
+    "SellRequest": {
+      "title": "SellRequest",
+      "description": "Customer submission to sell a car or commercial vehicle through PM Cars parking sales.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 20 },
+        "vehicleBrand": { "type": "string", "maxLength": 60 },
+        "vehicleModel": { "type": "string", "maxLength": 60 },
+        "year": { "type": "integer" },
+        "kilometers": { "type": "integer" },
+        "fuelType": { "type": "string", "maxLength": 30 },
+        "expectedPrice": { "type": "string", "maxLength": 50 },
+        "registrationType": { "type": "string", "maxLength": 30 },
+        "message": { "type": "string", "maxLength": 1000 },
+        "imageURL": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["new", "contacted", "closed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "phone", "vehicleBrand", "vehicleModel", "year", "expectedPrice"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "An authorized dealership administrator account linked to a Google UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 150 },
+        "name": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "enum": ["admin"] },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "role", "active"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "Business contact, hours, and branding settings for PM Cars Ariyalur.",
+      "type": "object",
+      "properties": {
+        "businessName": { "type": "string", "maxLength": 100 },
+        "phone1": { "type": "string", "maxLength": 20 },
+        "phone2": { "type": "string", "maxLength": 20 },
+        "whatsappNumber": { "type": "string", "maxLength": 20 },
+        "locationAddress": { "type": "string", "maxLength": 250 },
+        "businessHoursWeekdays": { "type": "string", "maxLength": 100 },
+        "businessHoursFriday": { "type": "string", "maxLength": 100 },
+        "businessHoursWeekend": { "type": "string", "maxLength": 100 },
+        "facebookUrl": { "type": "string", "maxLength": 250 },
+        "instagramUrl": { "type": "string", "maxLength": 250 },
+        "heroHeadline": { "type": "string", "maxLength": 200 },
+        "heroDescription": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["businessName", "phone1", "whatsappNumber", "locationAddress"]
+    }
+  },
+  "firestore": {
+    "/vehicles/{vehicleId}": {
+      "schema": { "$ref": "#/entities/Vehicle" },
+      "description": "Public pre-owned car and commercial vehicle listings. Publicly readable, writeable only by verified admins."
+    },
+    "/sellRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/SellRequest" },
+      "description": "Incoming customer sell car submissions. Public create with rate and validation guard, readable and updateable only by admins."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/Admin" },
+      "description": "Allowlist of verified Google user IDs authorized to manage inventory and view customer submissions. Readable and writeable strictly by active admins."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/Settings" },
+      "description": "Global dealership configuration. Publicly readable, writeable only by admins."
+    }
+  }
+}

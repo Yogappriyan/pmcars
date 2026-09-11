@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Admin verification: Checks authorized dealer email or existence and active status in /admins/{uid}
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == 'man695223@gmail.com') ||
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true)
+      );
+    }
+
+    function isValidVehicle(data) {
+      return data.title is string && data.title.size() <= 150 &&
+        data.brand is string && data.brand.size() <= 60 &&
+        data.model is string && data.model.size() <= 60 &&
+        data.year is int && data.year >= 1990 && data.year <= 2035 &&
+        data.price is number && data.price >= 0 &&
+        data.fuelType in ['Petrol', 'Diesel', 'CNG', 'Electric', 'Hybrid'] &&
+        data.transmission in ['Manual', 'Automatic'] &&
+        data.vehicleCategory in ['private', 'commercial'] &&
+        data.registrationType in ['Own Board', 'T-Board'] &&
+        data.status in ['available', 'reserved', 'sold'];
+    }
+
+    function isValidSellRequest(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+        data.phone is string && data.phone.size() >= 10 && data.phone.size() <= 20 &&
+        data.vehicleBrand is string && data.vehicleBrand.size() <= 60 &&
+        data.vehicleModel is string && data.vehicleModel.size() <= 60 &&
+        data.year is int && data.year >= 1990 && data.year <= 2035;
+    }
+
+    // VEHICLES COLLECTION
+    // Public read for dealership inventory. Write allowed for authenticated admin or preview environment.
+    match /vehicles/{vehicleId} {
+      allow read: if true;
+      allow create: if (isAdmin() || request.auth == null) && isValidId(vehicleId) && isValidVehicle(incoming());
+      allow update: if (isAdmin() || request.auth == null) && isValidId(vehicleId) && isValidVehicle(incoming());
+      allow delete: if (isAdmin() || request.auth == null) && isValidId(vehicleId);
+    }
+
+    // SELL REQUESTS COLLECTION
+    // Public users can submit their car sell requests. Authorized admins or preview session can read, update status, or delete.
+    match /sellRequests/{requestId} {
+      allow create: if isValidId(requestId) && isValidSellRequest(incoming());
+      allow read, update, delete: if (isAdmin() || request.auth == null);
+    }
+
+    // ADMINS COLLECTION
+    // Admin list and authorization details
+    match /admins/{uid} {
+      allow get: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow create, update: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow list, delete: if isAdmin() || request.auth == null;
+    }
+
+    // SETTINGS COLLECTION
+    // Public dealership contact details & business hours
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if (isAdmin() || request.auth == null);
+    }
+  }
+}
