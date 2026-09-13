@@ -15,7 +15,8 @@ import {
   subscribeToAdminAuth,
   subscribeToUserAuth,
   adminSignOut,
-  AUTHORIZED_ADMIN_EMAILS
+  AUTHORIZED_ADMIN_EMAILS,
+  createCustomerBooking
 } from './firebase/service';
 import { DEFAULT_BUSINESS_SETTINGS } from './data/initialData';
 import { Header } from './components/Header';
@@ -718,6 +719,34 @@ export default function App() {
                 v.id === bookedVehicle.id ? { ...v, status: 'reserved' as const } : v
               )
             );
+            const targetEmail = currentUser?.email || 'customer@pmcars.in';
+            const targetName = currentUser?.name || 'Customer';
+            createCustomerBooking({
+              customerEmail: targetEmail,
+              customerName: targetName,
+              customerPhone: '+91 98424 55123',
+              vehicleId: bookedVehicle.id,
+              vehicleTitle: bookedVehicle.title,
+              vehicleBrand: bookedVehicle.brand,
+              vehicleModel: bookedVehicle.model,
+              vehicleVariant: bookedVehicle.variant,
+              vehicleYear: bookedVehicle.year,
+              vehiclePrice: bookedVehicle.price,
+              vehicleImage: bookedVehicle.images?.[0] || 'https://images.unsplash.com/photo-1549399542-7e3f8b79c341?auto=format&fit=crop&w=800&q=80',
+              registrationNumber: bookedVehicle.registrationType === 'T-Board' ? 'TN 61 T 1120' : 'TN 61 F 4490',
+              fuelType: bookedVehicle.fuelType,
+              transmission: bookedVehicle.transmission,
+              tokenAmount: 10000,
+              balancePayable: Math.max(0, bookedVehicle.price - 10000),
+              paymentId: _verification.paymentId || `pay_${Date.now()}`,
+              paymentStatus: 'verified',
+              bookingStatus: 'confirmed',
+              estimatedDeliveryDate: 'Ready for Yard Inspection & Handover',
+              yardLocation: 'PM Cars Main Yard, Kollapuram Bypass, Ariyalur',
+              notes: 'Advance booking token verified online. Ready for delivery handover.'
+            }).then(() => {
+              handleTabChange('portal');
+            });
           }
         }}
       />

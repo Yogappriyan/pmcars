@@ -9,7 +9,8 @@ import {
   AlertTriangle,
   RefreshCw,
   SlidersHorizontal,
-  Car
+  Car,
+  CheckCircle2
 } from 'lucide-react';
 import { Vehicle } from '../../types';
 import { deleteVehicle, setVehicleStatus, toggleVehicleFeatured } from '../../firebase/service';
@@ -32,9 +33,15 @@ export const AdminInventory: React.FC<AdminInventoryProps> = ({
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [deleteTarget, setDeleteTarget] = useState<Vehicle | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [updatingVehicleId, setUpdatingVehicleId] = useState<string | null>(null);
+  const [optimisticStatuses, setOptimisticStatuses] = useState<Record<string, 'available' | 'reserved' | 'sold'>>({});
+  const [feedbackToast, setFeedbackToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
-  // Filter items
-  const filtered = vehicles.filter((v) => {
+  // Filter items with optimistic status support
+  const filtered = vehicles.map((v) => ({
+    ...v,
+    status: optimisticStatuses[v.id] || v.status
+  })).filter((v) => {
     const matchesSearch = 
       v.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       v.brand.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -47,14 +54,35 @@ export const AdminInventory: React.FC<AdminInventoryProps> = ({
   });
 
   const handleStatusChange = async (vehicleId: string, newStatus: 'available' | 'reserved' | 'sold') => {
+    // 1. Instantly update UI optimistically
+    setOptimisticStatuses((prev) => ({ ...prev, [vehicleId]: newStatus }));
+    setUpdatingVehicleId(vehicleId);
+
     try {
-      setActionLoading(true);
       await setVehicleStatus(vehicleId, newStatus);
       onRefresh();
+
+      const label = newStatus === 'available' ? 'Available' : newStatus === 'reserved' ? 'Reserved' : 'Sold Out';
+      setFeedbackToast({
+        message: `Status updated to "${label}"`,
+        type: 'success'
+      });
+      setTimeout(() => setFeedbackToast(null), 3000);
     } catch (err) {
       console.error("Status update error:", err);
+      // Revert optimistic status on error
+      setOptimisticStatuses((prev) => {
+        const copy = { ...prev };
+        delete copy[vehicleId];
+        return copy;
+      });
+      setFeedbackToast({
+        message: "Failed to update status. Please try again.",
+        type: 'error'
+      });
+      setTimeout(() => setFeedbackToast(null), 3000);
     } finally {
-      setActionLoading(false);
+      setUpdatingVehicleId(null);
     }
   };
 
@@ -103,6 +131,29 @@ export const AdminInventory: React.FC<AdminInventoryProps> = ({
           <span>Add New Vehicle</span>
         </button>
       </div>
+
+      {/* Dynamic Status Feedback Toast */}
+      {feedbackToast && (
+        <div
+          id="inventory-feedback-toast"
+          className={`px-4 py-2.5 rounded-xl border flex items-center justify-between gap-3 text-xs font-semibold shadow-xs transition-all ${
+            feedbackToast.type === 'success'
+              ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
+              : 'bg-rose-50 text-rose-900 border-rose-300'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{feedbackToast.message}</span>
+          </div>
+          <button
+            onClick={() => setFeedbackToast(null)}
+            className="text-xs font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Filter & Search Bar */}
       <div className="p-4 bg-white border border-slate-200 rounded-2xl grid grid-cols-1 sm:grid-cols-3 gap-3 shadow-xs">
@@ -191,24 +242,30 @@ export const AdminInventory: React.FC<AdminInventoryProps> = ({
                       {v.priceDisplay}
                     </td>
 
-                    {/* Status Dropdown */}
+                    {/* Status Dropdown with Dynamic Styling and Instant Response */}
                     <td className="py-3.5 px-4">
-                      <select
-                        value={v.status}
-                        onChange={(e) => handleStatusChange(v.id, e.target.value as any)}
-                        disabled={actionLoading}
-                        className={`text-xs font-bold px-2.5 py-1 rounded-lg border focus:outline-none cursor-pointer ${
-                          v.status === 'available'
-                            ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                            : v.status === 'reserved'
-                            ? 'bg-amber-50 text-amber-800 border-amber-300'
-                            : 'bg-slate-100 text-slate-600 border-slate-200'
-                        }`}
-                      >
-                        <option value="available">Available</option>
-                        <option value="reserved">Reserved</option>
-                        <option value="sold">Sold Out</option>
-                      </select>
+                      <div className="flex items-center gap-2">
+                        <select
+                          id={`vehicle-status-select-${v.id}`}
+                          value={v.status}
+                          onChange={(e) => handleStatusChange(v.id, e.target.value as 'available' | 'reserved' | 'sold')}
+                          disabled={updatingVehicleId === v.id}
+                          className={`text-xs font-bold px-2.5 py-1.5 rounded-lg border focus:outline-none cursor-pointer transition shadow-2xs ${
+                            v.status === 'available'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                              : v.status === 'reserved'
+                              ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+                              : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
+                          }`}
+                        >
+                          <option value="available" className="bg-white text-emerald-800 font-bold">Available</option>
+                          <option value="reserved" className="bg-white text-amber-900 font-bold">Reserved</option>
+                          <option value="sold" className="bg-white text-slate-700 font-bold">Sold Out</option>
+                        </select>
+                        {updatingVehicleId === v.id && (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-600 shrink-0" />
+                        )}
+                      </div>
                     </td>
 
                     {/* Featured Star Toggle */}

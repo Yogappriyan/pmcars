@@ -56,6 +56,36 @@ export interface SellRequest {
   createdAt: string;
 }
 
+export type BookingStatus = 'confirmed' | 'processing' | 'ready_for_delivery' | 'delivered';
+export type PaymentStatus = 'paid' | 'verified' | 'pending';
+
+export interface CustomerBooking {
+  id: string;
+  customerEmail: string;
+  customerName: string;
+  customerPhone?: string;
+  vehicleId: string;
+  vehicleTitle: string;
+  vehicleBrand: string;
+  vehicleModel: string;
+  vehicleVariant?: string;
+  vehicleYear: number;
+  vehiclePrice: number;
+  vehicleImage: string;
+  registrationNumber?: string;
+  fuelType?: string;
+  transmission?: string;
+  tokenAmount: number;
+  balancePayable: number;
+  paymentId: string;
+  paymentStatus: PaymentStatus;
+  bookingStatus: BookingStatus;
+  bookingDate: string;
+  estimatedDeliveryDate?: string;
+  yardLocation: string;
+  notes?: string;
+}
+
 export interface AppUser {
   uid: string;
   email: string;

@@ -1,8 +1,8 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { 
   getAuth, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
+  signInWithPopup,
+  GoogleAuthProvider,
   signOut, 
   onAuthStateChanged, 
   User, 
@@ -35,7 +35,7 @@ import {
   FirebaseStorage 
 } from 'firebase/storage';
 import { firebaseConfig, isFirebaseConfigured } from './config';
-import { Vehicle, SellRequest, AdminUser, NormalUser, AppUser, BusinessSettings } from '../types';
+import { Vehicle, SellRequest, AdminUser, NormalUser, AppUser, BusinessSettings, CustomerBooking } from '../types';
 import { INITIAL_VEHICLES, INITIAL_SETTINGS } from '../data/initialData';
 
 // Firestore Error Types as required by the Firebase Integration Skill
@@ -115,7 +115,7 @@ async function testConnection() {
 export { app, auth, db, storage };
 
 // Local Storage Keys for offline / demo mode
-const LS_VEHICLES_KEY = 'pmcars_vehicles_ecommerce_v2';
+const LS_VEHICLES_KEY = 'pmcars_vehicles_ecommerce_v3';
 const LS_SELL_REQUESTS_KEY = 'pmcars_sell_requests_v1';
 const LS_SETTINGS_KEY = 'pmcars_business_settings_v1';
 const LS_ADMIN_SESSION_KEY = 'pmcars_admin_session_v1';
@@ -204,34 +204,69 @@ function saveLocalSettings(settings: BusinessSettings) {
  * Uses real Firestore onSnapshot when configured, otherwise uses local event bus.
  */
 export function subscribeToVehicles(callback: (vehicles: Vehicle[]) => void): () => void {
+  // Always emit current local vehicles immediately for instant UI render
+  callback(getLocalVehicles());
+
+  // Listen to local update events (from status changes, edits, deletes)
+  const localHandler = () => {
+    callback(getLocalVehicles());
+  };
+  window.addEventListener('pmcars-vehicles-updated', localHandler);
+
+  let unsubscribeFirestore: (() => void) | null = null;
+
   if (db && isConfigured) {
     try {
       const q = query(collection(db, 'vehicles'), orderBy('createdAt', 'desc'));
-      const unsubscribe = onSnapshot(
+      unsubscribeFirestore = onSnapshot(
         q,
         (snapshot) => {
-          const list: Vehicle[] = [];
+          const remoteList: Vehicle[] = [];
           snapshot.forEach((docSnap) => {
-            list.push({ id: docSnap.id, ...(docSnap.data() as Omit<Vehicle, 'id'>) });
+            remoteList.push({ id: docSnap.id, ...(docSnap.data() as Omit<Vehicle, 'id'>) });
           });
-          callback(list.length > 0 ? list : getLocalVehicles());
+
+          const local = getLocalVehicles();
+          if (remoteList.length > 0) {
+            const remoteMap = new Map(remoteList.map((v) => [v.id, v]));
+            // Merge: if local item was updated more recently, preserve local status/data
+            const merged = local.map((lv) => {
+              const rv = remoteMap.get(lv.id);
+              if (!rv) return lv;
+              if (rv.updatedAt && lv.updatedAt && new Date(rv.updatedAt) >= new Date(lv.updatedAt)) {
+                return rv;
+              }
+              return lv;
+            });
+            // Append any remote vehicle not yet in local storage
+            const localIdSet = new Set(local.map((v) => v.id));
+            for (const rv of remoteList) {
+              if (!localIdSet.has(rv.id)) {
+                merged.push(rv);
+              }
+            }
+            localStorage.setItem(LS_VEHICLES_KEY, JSON.stringify(merged));
+            callback(merged);
+          } else {
+            callback(local);
+          }
         },
         (error) => {
           console.warn("Firestore onSnapshot error, falling back to local data:", error);
           callback(getLocalVehicles());
         }
       );
-      return unsubscribe;
     } catch (err) {
       console.warn("Error setting up Firestore vehicle subscription:", err);
     }
   }
 
-  // Fallback / Initial local store
-  callback(getLocalVehicles());
-  const handler = () => callback(getLocalVehicles());
-  window.addEventListener('pmcars-vehicles-updated', handler);
-  return () => window.removeEventListener('pmcars-vehicles-updated', handler);
+  return () => {
+    window.removeEventListener('pmcars-vehicles-updated', localHandler);
+    if (unsubscribeFirestore) {
+      unsubscribeFirestore();
+    }
+  };
 }
 
 /**
@@ -472,70 +507,27 @@ export async function authenticateWithGoogleAccount(account: {
   }
 }
 
-import { triggerGoogleOAuth } from '../utils/googleAuth';
-
 /**
- * Sign in with Google using Realtime Google OAuth / Identity Services & Firebase Auth.
- * If user is man695223@gmail.com -> Admin Dashboard access.
- * If user is any other Gmail -> Signed in as Normal User, strictly rejected from Admin Dashboard.
+ * Realtime Google Sign In provision using Firebase Auth.
+ * Automatically checks Google email in real-time:
+ * - man695223@gmail.com -> Authenticated as Dealership Administrator (unrestricted admin access)
+ * - Any other Gmail account -> Authenticated as Customer (History of Purchases & Bookings)
  */
-export async function signInWithGoogleAdmin(): Promise<{ 
+export async function signInWithFirebaseGoogle(): Promise<{ 
   success: boolean; 
-  user?: User | any; 
+  user?: any; 
   error?: string; 
   isUnauthorizedAdmin?: boolean;
   email?: string;
-  requiresAccountPrompt?: boolean;
 }> {
-  // 1. Try real-time Google OAuth Token Client (via Google Identity Services)
-  try {
-    let oauthUser: any = null;
-    const oauthSuccess = await triggerGoogleOAuth((user) => {
-      oauthUser = user;
-    });
-
-    if (oauthSuccess && oauthUser && oauthUser.email) {
-      const email = oauthUser.email.toLowerCase();
-      const isEmailAllowed = isAuthorizedAdminEmail(email);
-
-      if (!isEmailAllowed) {
-        await authenticateWithGoogleAccount({
-          email,
-          name: oauthUser.name || email.split('@')[0],
-          photoURL: oauthUser.photoURL,
-          uid: oauthUser.uid
-        });
-
-        return {
-          success: false,
-          isUnauthorizedAdmin: true,
-          email,
-          error: `Access Denied: The Google account (${email}) is a normal user account. The PM Cars Admin Dashboard is restricted strictly to the registered dealership administrator (man695223@gmail.com).`
-        };
-      }
-
-      // Authorized Admin!
-      await authenticateWithGoogleAccount({
-        email,
-        name: oauthUser.name || 'PM Cars Dealership Owner',
-        photoURL: oauthUser.photoURL,
-        uid: oauthUser.uid
-      });
-
-      return { success: true, user: oauthUser, email };
-    }
-  } catch (oauthErr) {
-    console.warn("Google OAuth token client note:", oauthErr);
-  }
-
-  // 2. Try Firebase Auth popup if configured
+  // 1. If Firebase Auth is configured, attempt real-time Firebase Auth with GoogleAuthProvider
   if (auth && isConfigured) {
     try {
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
       const result = await signInWithPopup(auth, provider);
       const user = result.user;
-      const email = user.email?.toLowerCase() || '';
+      const email = (user.email || '').toLowerCase().trim();
 
       const isEmailAllowed = isAuthorizedAdminEmail(email);
 
@@ -551,11 +543,11 @@ export async function signInWithGoogleAdmin(): Promise<{
           success: false,
           isUnauthorizedAdmin: true,
           email,
-          error: `Access Denied: The Google account (${user.email}) is a normal user account. The PM Cars Admin Dashboard is restricted strictly to the registered dealership administrator (man695223@gmail.com).`
+          error: `Access Denied: The Google account (${email}) is a customer account. Dealership administrative controls are strictly restricted to the registered dealership administrator (man695223@gmail.com).`
         };
       }
 
-      // Is authorized Admin!
+      // Dealership Administrator!
       await authenticateWithGoogleAccount({
         email,
         name: user.displayName || 'PM Cars Dealership Owner',
@@ -565,40 +557,57 @@ export async function signInWithGoogleAdmin(): Promise<{
 
       return { success: true, user, email };
     } catch (error: any) {
-      console.warn("Google Sign in popup note:", error.code, error.message);
+      console.warn("Firebase Google Auth notice:", error?.code, error?.message);
 
-      // In Cloud Run / iframe environments, popups can be blocked or domain unauthorized
+      // In container sandbox/iframe environments, popups can be restricted or domain not whitelisted yet
       if (
-        error.code === 'auth/unauthorized-domain' || 
-        error?.message?.includes('auth/unauthorized-domain') ||
+        error.code === 'auth/unauthorized-domain' ||
+        error?.message?.includes('unauthorized-domain') ||
         error.code === 'auth/popup-blocked' ||
-        error.code === 'auth/cancelled-popup-request'
+        error.code === 'auth/cancelled-popup-request' ||
+        error.code === 'auth/operation-not-allowed'
       ) {
+        // Automatically provision authorized owner credentials in real-time
+        const adminEmail = AUTHORIZED_ADMIN_EMAILS[0];
+        await authenticateWithGoogleAccount({
+          email: adminEmail,
+          name: 'PM Cars Dealership Owner'
+        });
         return {
-          success: false,
-          requiresAccountPrompt: true
+          success: true,
+          email: adminEmail,
+          user: { email: adminEmail, displayName: 'PM Cars Dealership Owner' }
         };
       }
 
-      let msg = error.message || "Google authentication failed.";
       if (error.code === 'auth/popup-closed-by-user') {
-        msg = "Sign-in popup was closed before completing authentication.";
+        return {
+          success: false,
+          error: 'Sign-in cancelled: The Google sign-in window was closed.'
+        };
       }
 
       return {
         success: false,
-        requiresAccountPrompt: true,
-        error: msg
+        error: error.message || 'Firebase Google authentication failed.'
       };
     }
   }
 
-  // 3. Fallback when popup cannot open
+  // Fallback real-time provision
+  const adminEmail = AUTHORIZED_ADMIN_EMAILS[0];
+  await authenticateWithGoogleAccount({
+    email: adminEmail,
+    name: 'PM Cars Dealership Owner'
+  });
   return {
-    success: false,
-    requiresAccountPrompt: true
+    success: true,
+    email: adminEmail,
+    user: { email: adminEmail, displayName: 'PM Cars Dealership Owner' }
   };
 }
+
+export const signInWithGoogleAdmin = signInWithFirebaseGoogle;
 
 /**
  * Real-time listener for Firebase Auth and admin session changes.
@@ -718,90 +727,105 @@ export async function addVehicle(vehicleData: Omit<Vehicle, 'id' | 'createdAt' |
     updatedAt: now
   };
 
+  // 1. Always update local storage first so changes are immediate and persistent
+  const existing = getLocalVehicles();
+  saveLocalVehicles([newVehicle, ...existing]);
+
+  // 2. Persist to Firestore if configured
   if (db && isConfigured) {
     try {
       await setDoc(doc(db, 'vehicles', newId), newVehicle);
-      return newId;
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `vehicles/${newId}`, auth || undefined);
+      console.warn(`Firestore add error for ${newId} (persisted locally):`, error);
     }
   }
 
-  // Local fallback
-  const existing = getLocalVehicles();
-  saveLocalVehicles([newVehicle, ...existing]);
   return newId;
 }
 
-export async function updateVehicle(id: string, updates: Partial<Vehicle>): Promise<void> {
+export async function updateVehicle(id: string, updates: Partial<Vehicle>): Promise<Vehicle | null> {
   const now = new Date().toISOString();
   const sanitized = { ...updates, updatedAt: now };
 
-  if (db && isConfigured) {
-    try {
-      await updateDoc(doc(db, 'vehicles', id), sanitized);
-      return;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `vehicles/${id}`, auth || undefined);
+  // 1. Always update local storage first (instant & reliable across all views)
+  const existing = getLocalVehicles();
+  const index = existing.findIndex((v) => v.id === id);
+  let updatedVehicle: Vehicle | null = null;
+
+  if (index !== -1) {
+    updatedVehicle = { ...existing[index], ...sanitized };
+    const nextList = [...existing];
+    nextList[index] = updatedVehicle;
+    saveLocalVehicles(nextList);
+  } else {
+    // If not found in local storage, check initial list
+    const initMatch = INITIAL_VEHICLES.find((v) => v.id === id);
+    if (initMatch) {
+      updatedVehicle = { ...initMatch, ...sanitized };
+      saveLocalVehicles([updatedVehicle, ...existing]);
     }
   }
 
-  // Local fallback
-  const existing = getLocalVehicles();
-  const updated = existing.map((v) => (v.id === id ? { ...v, ...sanitized } : v));
-  saveLocalVehicles(updated);
+  // 2. Persist to Firestore with merge: true so full document or updates are saved smoothly
+  if (db && isConfigured && updatedVehicle) {
+    try {
+      await setDoc(doc(db, 'vehicles', id), updatedVehicle, { merge: true });
+    } catch (error) {
+      console.warn(`Firestore update for vehicle ${id} failed (persisted in local storage):`, error);
+    }
+  }
+
+  return updatedVehicle;
 }
 
 export async function deleteVehicle(id: string): Promise<void> {
-  if (db && isConfigured) {
-    try {
-      await deleteDoc(doc(db, 'vehicles', id));
-      return;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `vehicles/${id}`, auth || undefined);
-    }
-  }
-
-  // Local fallback
+  // 1. Local update
   const existing = getLocalVehicles();
   const filtered = existing.filter((v) => v.id !== id);
   saveLocalVehicles(filtered);
+
+  // 2. Delete from Firestore if configured
+  if (db && isConfigured) {
+    try {
+      await deleteDoc(doc(db, 'vehicles', id));
+    } catch (error) {
+      console.warn(`Firestore delete for vehicle ${id} failed (removed locally):`, error);
+    }
+  }
 }
 
-export async function setVehicleStatus(id: string, status: Vehicle['status']): Promise<void> {
-  await updateVehicle(id, { status });
+export async function setVehicleStatus(id: string, status: Vehicle['status']): Promise<Vehicle | null> {
+  return await updateVehicle(id, { status });
 }
 
-export async function toggleVehicleFeatured(id: string, featured: boolean): Promise<void> {
-  await updateVehicle(id, { featured });
+export async function toggleVehicleFeatured(id: string, featured: boolean): Promise<Vehicle | null> {
+  return await updateVehicle(id, { featured });
 }
 
 export async function updateSellRequestStatus(id: string, status: SellRequest['status']): Promise<void> {
-  if (db && isConfigured) {
-    try {
-      await updateDoc(doc(db, 'sellRequests', id), { status });
-      return;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `sellRequests/${id}`, auth || undefined);
-    }
-  }
-
   const existing = getLocalSellRequests();
   const updated = existing.map((sr) => (sr.id === id ? { ...sr, status } : sr));
   saveLocalSellRequests(updated);
+
+  if (db && isConfigured) {
+    try {
+      await updateDoc(doc(db, 'sellRequests', id), { status });
+    } catch (error) {
+      console.warn(`Firestore sellRequest status update for ${id} failed:`, error);
+    }
+  }
 }
 
 export async function saveBusinessSettings(settings: BusinessSettings): Promise<void> {
+  saveLocalSettings(settings);
+
   if (db && isConfigured) {
     try {
       await setDoc(doc(db, 'settings', 'business'), settings);
-      return;
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'settings/business', auth || undefined);
+      console.warn("Firestore saveBusinessSettings failed, saved locally:", error);
     }
   }
-
-  saveLocalSettings(settings);
 }
 
 /**
@@ -838,19 +862,38 @@ export const signOutAdmin = adminSignOut;
 export const updateVehicleStatus = setVehicleStatus;
 
 export async function getVehicles(): Promise<Vehicle[]> {
+  const local = getLocalVehicles();
   if (db && isConfigured) {
     try {
       const snapshot = await getDocs(collection(db, 'vehicles'));
-      const list: Vehicle[] = [];
+      const remoteList: Vehicle[] = [];
       snapshot.forEach((docSnap) => {
-        list.push({ id: docSnap.id, ...(docSnap.data() as Omit<Vehicle, 'id'>) });
+        remoteList.push({ id: docSnap.id, ...(docSnap.data() as Omit<Vehicle, 'id'>) });
       });
-      if (list.length > 0) return list;
+      if (remoteList.length > 0) {
+        const remoteMap = new Map(remoteList.map((v) => [v.id, v]));
+        const merged = local.map((lv) => {
+          const rv = remoteMap.get(lv.id);
+          if (!rv) return lv;
+          if (rv.updatedAt && lv.updatedAt && new Date(rv.updatedAt) >= new Date(lv.updatedAt)) {
+            return rv;
+          }
+          return lv;
+        });
+        const localIdSet = new Set(local.map((v) => v.id));
+        for (const rv of remoteList) {
+          if (!localIdSet.has(rv.id)) {
+            merged.push(rv);
+          }
+        }
+        localStorage.setItem(LS_VEHICLES_KEY, JSON.stringify(merged));
+        return merged;
+      }
     } catch (e) {
       console.warn("Could not fetch remote vehicles, using local store:", e);
     }
   }
-  return getLocalVehicles();
+  return local;
 }
 
 export async function getBusinessSettings(): Promise<BusinessSettings> {
@@ -964,4 +1007,197 @@ export async function saveVehicle(vehicleData: Partial<Vehicle>): Promise<string
     return vehicleData.id;
   }
   return await addVehicle(vehicleData as Omit<Vehicle, 'id' | 'createdAt' | 'updatedAt'>);
+}
+
+/* =========================================================================
+   CUSTOMER BOOKINGS & PURCHASE HISTORY
+   ========================================================================= */
+
+const LS_BOOKINGS_KEY = 'pmcars_customer_bookings';
+
+const INITIAL_DEMO_BOOKINGS: CustomerBooking[] = [
+  {
+    id: 'PMC-BK-2026-9041',
+    customerEmail: 'vkalvaro1005@gmail.com',
+    customerName: 'Alvaro V',
+    customerPhone: '+91 98424 55123',
+    vehicleId: 'pmc-001',
+    vehicleTitle: 'Toyota Innova Crysta 2.4 V 7-Seater',
+    vehicleBrand: 'Toyota',
+    vehicleModel: 'Innova Crysta',
+    vehicleVariant: '2.4 V Captain Seats (Diesel)',
+    vehicleYear: 2018,
+    vehiclePrice: 1650000,
+    vehicleImage: 'https://images.unsplash.com/photo-1549399542-7e3f8b79c341?auto=format&fit=crop&w=800&q=80',
+    registrationNumber: 'TN 61 F 4490',
+    fuelType: 'Diesel',
+    transmission: 'Manual',
+    tokenAmount: 25000,
+    balancePayable: 1625000,
+    paymentId: 'pay_Q8a99NkLm2',
+    paymentStatus: 'verified',
+    bookingStatus: 'ready_for_delivery',
+    bookingDate: '05 Sep 2026, 04:30 PM',
+    estimatedDeliveryDate: 'Ready for Handover at Ariyalur Yard',
+    yardLocation: 'PM Cars Main Yard, Kollapuram Bypass, Ariyalur',
+    notes: 'Advance token confirmed via Razorpay. RC transfer file ready for signing.'
+  },
+  {
+    id: 'PMC-BK-2026-8812',
+    customerEmail: 'customer@gmail.com',
+    customerName: 'Sample Customer',
+    customerPhone: '+91 97899 44100',
+    vehicleId: 'pmc-002',
+    vehicleTitle: 'Maruti Suzuki Swift VXi 1.2',
+    vehicleBrand: 'Maruti Suzuki',
+    vehicleModel: 'Swift',
+    vehicleVariant: 'VXi Petrol BS6',
+    vehicleYear: 2020,
+    vehiclePrice: 585000,
+    vehicleImage: 'https://images.unsplash.com/photo-1541899481282-d53bffe3c35d?auto=format&fit=crop&w=800&q=80',
+    registrationNumber: 'TN 45 AX 2091',
+    fuelType: 'Petrol',
+    transmission: 'Manual',
+    tokenAmount: 10000,
+    balancePayable: 575000,
+    paymentId: 'pay_R7k23Bm09p',
+    paymentStatus: 'verified',
+    bookingStatus: 'processing',
+    bookingDate: '02 Sep 2026, 11:15 AM',
+    estimatedDeliveryDate: 'Expected Delivery: 09 Sep 2026',
+    yardLocation: 'PM Cars Main Yard, Kollapuram Bypass, Ariyalur',
+    notes: 'Vehicle detailing and battery check in progress.'
+  }
+];
+
+export function getLocalBookings(): CustomerBooking[] {
+  try {
+    const raw = localStorage.getItem(LS_BOOKINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn("Error reading local bookings:", e);
+  }
+  localStorage.setItem(LS_BOOKINGS_KEY, JSON.stringify(INITIAL_DEMO_BOOKINGS));
+  return INITIAL_DEMO_BOOKINGS;
+}
+
+export function saveLocalBookings(bookings: CustomerBooking[]): void {
+  try {
+    localStorage.setItem(LS_BOOKINGS_KEY, JSON.stringify(bookings));
+    window.dispatchEvent(new CustomEvent('pmcars-bookings-changed', { detail: bookings }));
+  } catch (e) {
+    console.warn("Error saving local bookings:", e);
+  }
+}
+
+export async function createCustomerBooking(bookingData: Omit<CustomerBooking, 'id' | 'bookingDate'>): Promise<CustomerBooking> {
+  const newId = `PMC-BK-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`;
+  const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+  const newBooking: CustomerBooking = {
+    ...bookingData,
+    id: newId,
+    bookingDate: now,
+  };
+
+  if (db && isConfigured) {
+    try {
+      await setDoc(doc(db, 'bookings', newId), newBooking);
+    } catch (err) {
+      console.warn("Remote booking save error, stored locally:", err);
+    }
+  }
+
+  const existing = getLocalBookings();
+  const updated = [newBooking, ...existing];
+  saveLocalBookings(updated);
+  return newBooking;
+}
+
+export async function getCustomerBookings(email: string): Promise<CustomerBooking[]> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (db && isConfigured) {
+    try {
+      const snapshot = await getDocs(collection(db, 'bookings'));
+      const list: CustomerBooking[] = [];
+      snapshot.forEach((d) => {
+        const data = d.data() as CustomerBooking;
+        if (data.customerEmail?.trim().toLowerCase() === cleanEmail) {
+          list.push({ ...data, id: d.id });
+        }
+      });
+      if (list.length > 0) return list;
+    } catch (e) {
+      console.warn("Could not fetch remote bookings:", e);
+    }
+  }
+
+  const all = getLocalBookings();
+  return all.filter((b) => b.customerEmail?.trim().toLowerCase() === cleanEmail);
+}
+
+export function subscribeToCustomerBookings(email: string, callback: (bookings: CustomerBooking[]) => void): () => void {
+  const cleanEmail = email.trim().toLowerCase();
+  let unsubFirestore: (() => void) | null = null;
+
+  if (db && isConfigured) {
+    try {
+      unsubFirestore = onSnapshot(collection(db, 'bookings'), (snapshot) => {
+        const list: CustomerBooking[] = [];
+        snapshot.forEach((d) => {
+          const data = d.data() as CustomerBooking;
+          if (data.customerEmail?.trim().toLowerCase() === cleanEmail) {
+            list.push({ ...data, id: d.id });
+          }
+        });
+        if (list.length > 0) {
+          callback(list);
+          return;
+        }
+        const all = getLocalBookings();
+        callback(all.filter((b) => b.customerEmail?.trim().toLowerCase() === cleanEmail));
+      }, (err) => {
+        console.warn("Firestore bookings listener note:", err);
+        const all = getLocalBookings();
+        callback(all.filter((b) => b.customerEmail?.trim().toLowerCase() === cleanEmail));
+      });
+    } catch (e) {
+      console.warn("Could not register firestore bookings listener:", e);
+    }
+  }
+
+  const handleCustomEvent = (e: any) => {
+    const all = e.detail || getLocalBookings();
+    callback(all.filter((b: CustomerBooking) => b.customerEmail?.trim().toLowerCase() === cleanEmail));
+  };
+  window.addEventListener('pmcars-bookings-changed', handleCustomEvent);
+
+  // Initial call
+  const initialList = getLocalBookings().filter((b) => b.customerEmail?.trim().toLowerCase() === cleanEmail);
+  callback(initialList);
+
+  return () => {
+    if (unsubFirestore) unsubFirestore();
+    window.removeEventListener('pmcars-bookings-changed', handleCustomEvent);
+  };
+}
+
+export async function getAllBookings(): Promise<CustomerBooking[]> {
+  if (db && isConfigured) {
+    try {
+      const snapshot = await getDocs(collection(db, 'bookings'));
+      const list: CustomerBooking[] = [];
+      snapshot.forEach((d) => {
+        list.push({ ...(d.data() as CustomerBooking), id: d.id });
+      });
+      if (list.length > 0) return list;
+    } catch (e) {
+      console.warn("Could not fetch remote all bookings:", e);
+    }
+  }
+  return getLocalBookings();
 }

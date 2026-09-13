@@ -18,7 +18,7 @@ import {
   Shield
 } from 'lucide-react';
 import { Vehicle, SellRequest, AdminUser, BusinessSettings } from '../../types';
-import { signOutAdmin } from '../../firebase/service';
+import { signOutAdmin, setVehicleStatus } from '../../firebase/service';
 import pmCarsLogoImg from '../../assets/images/logo pm.jpg';
 import { AdminInventory } from './AdminInventory';
 import { AdminVehicleForm } from './AdminVehicleForm';
@@ -345,15 +345,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </div>
 
                         <div className="flex items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold capitalize ${
-                            veh.status === 'available'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : veh.status === 'reserved'
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-slate-200 text-slate-700'
-                          }`}>
-                            {veh.status}
-                          </span>
+                          <select
+                            id={`recent-vehicle-status-${veh.id}`}
+                            value={veh.status}
+                            onChange={async (e) => {
+                              const newStatus = e.target.value as 'available' | 'reserved' | 'sold';
+                              await setVehicleStatus(veh.id, newStatus);
+                              onRefreshData();
+                            }}
+                            className={`px-2 py-1 rounded-lg text-[11px] font-bold border focus:outline-none cursor-pointer transition ${
+                              veh.status === 'available'
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                                : veh.status === 'reserved'
+                                ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+                                : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
+                            }`}
+                          >
+                            <option value="available" className="bg-white text-emerald-800 font-bold">Available</option>
+                            <option value="reserved" className="bg-white text-amber-900 font-bold">Reserved</option>
+                            <option value="sold" className="bg-white text-slate-700 font-bold">Sold Out</option>
+                          </select>
                           <button
                             onClick={() => handleEditVehicle(veh)}
                             className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-700 hover:text-slate-900 text-xs font-semibold border border-slate-200 cursor-pointer transition shadow-2xs"
